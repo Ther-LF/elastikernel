@@ -11,9 +11,12 @@ ElastiKernel: Resource-adaptive kernel auto-tuning for spatially shared GPUs. Th
 - `elastikernel/` — Main Python package (pushed to GitHub as `Ther-LF/elastikernel`)
   - `green_ctx.py` — CUDA Green Context wrapper using `cuda-python` driver API. Creates SM-partitioned streams without process restart (unlike MPS).
   - `sm_aware_matmul.py` — Two modes: `--analytical` (pure Python wave analysis, no GPU) and `--benchmark` (Triton GEMM with Green Context, needs GPU).
-- `docs/plans/` — Design documents (the main one: `2026-03-17-elastikernel-design.md`)
+  - `verify_isolation.py` — Timing-based test proving disjoint Green Context partitions have real SM isolation.
+- `docs/plans/` — Design documents
+  - `2026-03-17-elastikernel-design.md` — Full design with 7-layer interference taxonomy
+  - `2026-03-19-bulletserve-integration.md` — BulletServe e2e integration plan
 - `paper/` — LaTeX paper and literature survey
-- `triton/` — Upstream Triton source (git submodule/clone, read-only reference)
+- `triton/` — Upstream Triton source (read-only reference)
 - `DeepGEMM/` — DeepSeek's DeepGEMM (read-only reference)
 
 ## Commands
@@ -59,6 +62,41 @@ cd /path/to/elastikernel && git pull && python -m elastikernel.sm_aware_matmul -
 ```
 
 不要只说"运行 xxx"——要给出从 git pull 到执行的完整一行命令，让用户可以直接复制粘贴到服务器终端。
+
+## Green Context: Disjoint Partitions
+
+`create_sm_partition()` splits from full device each time — two calls get OVERLAPPING SMs.
+Use `create_disjoint_partitions()` for guaranteed non-overlapping SM sets (chain-split from remaining resource).
+Green Context isolates SMs only — L2 cache and DRAM bandwidth are still shared.
+
+## E2E Testing: BulletServe Integration
+
+ElastiKernel integrates into **BulletServe** (SGLang v0.3.0 fork, ASPLOS'26) for end-to-end LLM inference benchmarks. BulletServe handles scheduling + SM partitioning (libsmctrl), ElastiKernel replaces the kernel layer with SM-aware versions.
+
+- libsmctrl sets TPC bitmask on CUDA stream → compatible with Triton (mask applies to any kernel on that stream)
+- We read `SharedManager.prefill_num_tpcs * 2` → pass as `NUM_SMS` to Triton autotune key
+- Kernel body unchanged, only autotune key gains `NUM_SMS` dimension
+- Priority: P0 = fused_moe (Triton), P1 = GEMM (Triton), P2 = attention (FlashInfer CUDA, harder)
+
+### BulletServe Setup (on GPU server)
+
+```bash
+# Clone and build
+git clone https://github.com/zejia-lin/BulletServe.git && cd BulletServe
+cd csrc && make config && make build && cd ..
+pip install -e "python[all]"
+
+# Start MPS (required for spatial sharing)
+bash ./scripts/start_mps.sh
+
+# Launch server (Llama-3.1-8B, single A100)
+python -m sglang.launch_server --model-path meta-llama/Llama-3.1-8B --enable-bullet-full
+
+# Stop MPS when done
+bash ./scripts/kill_mps.sh
+```
+
+Requirements: CUDA <= 12.6, Python >= 3.12.9, NVIDIA GPU with MPS support.
 
 ## Design Conventions
 
