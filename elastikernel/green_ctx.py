@@ -162,7 +162,7 @@ def create_sm_partition(dev: torch.device, sm_count: int) -> Tuple[torch.cuda.St
     )
 
     _, cu_stream, _, actual = _split_and_create_gc(cu_dev, resource, rounded)
-    torch_stream = torch.cuda.ExternalStream(cu_stream, device=dev)
+    torch_stream = torch.cuda.ExternalStream(int(cu_stream), device=dev)
     return torch_stream, actual
 
 
@@ -224,7 +224,7 @@ def create_disjoint_partitions(
         gc, cu_stream, remaining, actual = _split_and_create_gc(
             cu_dev, current_resource, rounded
         )
-        torch_stream = torch.cuda.ExternalStream(cu_stream, device=dev)
+        torch_stream = torch.cuda.ExternalStream(int(cu_stream), device=dev)
         partitions.append((torch_stream, actual))
 
         # If more partitions to create, convert remaining into a splittable resource
