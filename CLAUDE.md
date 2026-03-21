@@ -15,6 +15,7 @@ ElastiKernel: Resource-adaptive kernel auto-tuning for spatially shared GPUs. Th
 - `docs/plans/` — Design documents
   - `2026-03-17-elastikernel-design.md` — Full design with 7-layer interference taxonomy
   - `2026-03-19-bulletserve-integration.md` — BulletServe e2e integration plan
+  - `2026-03-21-flashinfer-bench-integration.md` — FlashInfer-Bench AI agent workflow integration
 - `paper/` — LaTeX paper and literature survey
 - `triton/` — Upstream Triton source (read-only reference)
 - `DeepGEMM/` — DeepSeek's DeepGEMM (read-only reference)
@@ -97,6 +98,66 @@ bash ./scripts/kill_mps.sh
 ```
 
 Requirements: CUDA <= 12.6, Python >= 3.12.9, NVIDIA GPU with MPS support.
+
+## E2E Testing: FlashInfer-Bench Integration
+
+FlashInfer-Bench (MLSys'26) provides AI agent workflow for kernel generation, benchmarking, and deployment. We extend it with SM-aware dimension.
+
+### Why FlashInfer-Bench
+
+- **FlashInfer Trace Schema**: JSON format for kernel definitions, workloads, solutions
+- **Agent Tools**: `flashinfer_bench.agents` for packing, sanitizer, NCU profiling
+- **Deployment**: `apply()` injects kernels into SGLang/vLLM with zero code change
+- **Leaderboard**: Track AI agent GPU programming capabilities
+- **Green Context**: `flashinfer.green_ctx` already has SM partitioning API
+
+### Integration Points
+
+1. **Extend Definition Schema**:
+   ```json
+   "axes": {
+     "NUM_SMS": {"type": "var", "dtype": "int32"}
+   }
+   ```
+
+2. **Agent Prompt** includes NUM_SMS for SM-aware autotuning:
+   ```
+   Add NUM_SMS to triton.autotune key: key=['M', 'N', 'K', 'NUM_SMS']
+   Different tile sizes are optimal for different SM counts.
+   ```
+
+3. **Evaluation Matrix**: SM counts × workloads × kernels
+   - SM: 16, 32, 48, 64, 80, 96, 108 (A100)
+   - Kernels: fused_moe, GEMM, attention
+   - Metric: `fast_p` curve per SM count
+
+4. **Deployment via apply()**:
+   ```python
+   flashinfer_bench.apply.enable(
+       definition="fused_moe_sm_aware",
+       resolver=lambda args: f"fused_moe_sm_aware_{args['num_sms']}",
+   )
+   ```
+
+### FlashInfer-Bench Setup
+
+```bash
+# Install
+pip install flashinfer-bench modal
+
+# Download dataset
+git lfs install
+git clone https://huggingface.co/datasets/flashinfer-ai/mlsys26-contest
+export FIB_DATASET_PATH=/path/to/flashinfer-trace
+
+# Run local benchmark
+python scripts/run_local.py
+
+# Run on B200 via Modal
+modal run scripts/run_modal.py
+```
+
+Full design: `docs/plans/2026-03-21-flashinfer-bench-integration.md`
 
 ## Design Conventions
 
