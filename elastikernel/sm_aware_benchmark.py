@@ -281,15 +281,13 @@ def run_moe_benchmark():
             a_ptrs += BLOCK_SIZE_K * stride_ak
             b_ptrs += BLOCK_SIZE_K * stride_bk
 
-        # SwiGLU activation (split N dimension in half)
-        N_HALF = N // 2
-        acc_left = acc[:, :BLOCK_SIZE_N//2]
-        acc_right = acc[:, BLOCK_SIZE_N//2:]
-        acc_act = acc_left * (acc_right * tl.sigmoid(acc_right))  # SwiGLU
-
-        c_ptrs = c_ptr + offs_m[:, None] * stride_cm + (offs_n // 2)[None, :] * stride_cn
-        c_mask = mask_m[:, None] & (offs_n[None, :] < N_HALF)
-        tl.store(c_ptrs, acc_act.to(tl.float16), mask=c_mask)
+        # Store result directly (no SwiGLU for simplicity - grouped GEMM only)
+        c = acc.to(tl.float16)
+        offs_cm = start_token + pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        c_ptrs = c_ptr + offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn
+        c_mask = (offs_cm[:, None] < end_token) & (offs_cn[None, :] < N)
+        tl.store(c_ptrs, c, mask=c_mask)
 
     @triton.autotune(configs=make_moe_sm_aware_configs(), key=['M', 'N', 'K', 'NUM_EXPERTS', 'NUM_SMS'])
     @triton.jit
@@ -342,20 +340,18 @@ def run_moe_benchmark():
             a_ptrs += BLOCK_SIZE_K * stride_ak
             b_ptrs += BLOCK_SIZE_K * stride_bk
 
-        N_HALF = N // 2
-        acc_left = acc[:, :BLOCK_SIZE_N//2]
-        acc_right = acc[:, BLOCK_SIZE_N//2:]
-        acc_act = acc_left * (acc_right * tl.sigmoid(acc_right))
-
-        c_ptrs = c_ptr + offs_m[:, None] * stride_cm + (offs_n // 2)[None, :] * stride_cn
-        c_mask = mask_m[:, None] & (offs_n[None, :] < N_HALF)
-        tl.store(c_ptrs, acc_act.to(tl.float16), mask=c_mask)
+        # Store result directly (no SwiGLU for simplicity - grouped GEMM only)
+        c = acc.to(tl.float16)
+        offs_cm = start_token + pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        c_ptrs = c_ptr + offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn
+        c_mask = (offs_cm[:, None] < end_token) & (offs_cn[None, :] < N)
+        tl.store(c_ptrs, c, mask=c_mask)
 
     def call_moe_vanilla(hidden_states, weights, expert_offsets, num_experts, N, K):
         """Call vanilla MoE kernel."""
         M = hidden_states.shape[0]
-        N_out = N // 2  # SwiGLU output dimension
-        output = torch.empty((M, N_out), device=hidden_states.device, dtype=torch.float16)
+        output = torch.empty((M, N), device=hidden_states.device, dtype=torch.float16)
 
         # Grid: (blocks per expert) x (num_experts)
         max_blocks_per_expert = triton.cdiv(M, 16) * triton.cdiv(N, 64)  # Conservative estimate
@@ -376,8 +372,7 @@ def run_moe_benchmark():
     def call_moe_sm_aware(hidden_states, weights, expert_offsets, num_experts, N, K, num_sms):
         """Call SM-aware MoE kernel."""
         M = hidden_states.shape[0]
-        N_out = N // 2
-        output = torch.empty((M, N_out), device=hidden_states.device, dtype=torch.float16)
+        output = torch.empty((M, N), device=hidden_states.device, dtype=torch.float16)
 
         max_blocks_per_expert = triton.cdiv(M, 16) * triton.cdiv(N, 64)
         grid = lambda META: (
